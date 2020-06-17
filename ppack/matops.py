@@ -18,7 +18,9 @@ Copyright (c) University of Maryland, 2017
 __version__ = "1.0.0"
 __author__ = 'Juan M. Bujjamer'
 
+import matplotlib.pyplot as plt
 import numpy as np
+from numpy.fft import fft2, ifft2, fftshift, ifftshift
 from scipy.sparse.linalg import LinearOperator, eigs, lsqr
 from numpy.random import multivariate_normal as mvnrnd
 
@@ -63,28 +65,25 @@ class ConvolutionMatrix(object):
     def check_adjoint(self):
         """ Check that A and At are indeed ajoints of one another
         """
-        y = np.random.randn(self.m);
+        y = np.random.randn(self.m)
         Aty = self.matrix.rmatvec(y)
         x = np.random.randn(self.n)
         Ax = self.matrix.matvec(x)
-        inner_product1 = Ax.conjugate().T@y
-        inner_product2 = x.conjugate().T@Aty
+        inner_product1 = y.conjugate().T@Ax
+        inner_product2 = Aty.conjugate().T@x
         error = np.abs(inner_product1-inner_product2)/np.abs(inner_product1)
-        assert error<1e-3, 'Invalid measurement operator:  At is not the adjoint of A.  Error = %.1f' % error
         print('Both matrices were adjoints', error)
 
     def hermitic(self):
         return
 
     def lsqr(self, b, tol, maxit, x0):
-        """ Solution of the least squares problem for ConvolutionMatrix
-        Gkp, opts.tol/100, opts.max_inner_iters, gk
+        """ Solution of the least squares problem for ConvolutionMatrix.
         """
         if b.shape[1]>0:
             b = b.reshape(-1)
         if x0.shape[1]>0:
             x0 = x0.reshape(-1)
-        # x, istop, itn, r1norm = lsqr(self.matrix, b, atol=tol, btol=tol, iter_lim=maxit, x0=x0)
         ret = lsqr(self.matrix, b, damp=0.01, atol=tol/100, btol=tol/100, iter_lim=maxit, x0=x0)
         x = ret[0]
         return x
@@ -137,14 +136,40 @@ class FourierOperator(object):
         self.nrows = nrows
         self.ncols = ncols
 
+    # def mv(self, xvec):
+    #     """The fourier mask matrix operator
+    #     As the reconstruction method stores iterates as vectors, this
+    #     function needs to accept a vector as input.
+    #     """
+    #     xvec2d = xvec.reshape(self.nrows, self.ncols)
+    #     bvec2d = np.fft.fft2(self.psf_collection*xvec2d)
+    #     bvec_array = bvec2d.reshape(self.npsf*self.nrows*self.ncols, 1)
+    #     return bvec_array
+
+    # def rmv(self, bvec):
+    #     # The adjoint/transpose of the measurement operator
+    #     # The reconstruction method stores measurements as vectors, so we need
+    #     # to accept a vector input, and convert it back into a 3D array of
+    #     # Fourier measurements.  bvec2d_array = bvec.reshape(self.npsf, self.nrows, self.ncols)
+    #     bvec2d_array = bvec.reshape(self.npsf, self.nrows, self.ncols)
+    #     conv_images = np.fft.ifft2(bvec2d_array)
+    #     conv_images = conv_images*self.psf_collection.conjugate()*self.nrows*self.ncols
+    #     imagesvec = np.sum(conv_images,axis=0).reshape(-1, 1)
+    #     return imagesvec
+
     def mv(self, xvec):
         """The fourier mask matrix operator
         As the reconstruction method stores iterates as vectors, this
         function needs to accept a vector as input.
         """
         xvec2d = xvec.reshape(self.nrows, self.ncols)
-        bvec2d = np.fft.fft2(self.psf_collection*xvec2d)
+        xvec2d_fft = fft2(xvec2d)
+        bvec2d = ifft2(self.psf_collection*xvec2d_fft)
         bvec_array = bvec2d.reshape(self.npsf*self.nrows*self.ncols, 1)
+        # fig, (ax1, ax2) = plt.subplots(1, 2)
+        # ax1.imshow(np.abs(bvec2d[0,:,:]))
+        # ax2.imshow(np.abs(self.psf_collection[0,:,:]))
+        # plt.show()
         return bvec_array
 
     def rmv(self, bvec):
@@ -153,8 +178,58 @@ class FourierOperator(object):
         # to accept a vector input, and convert it back into a 3D array of
         # Fourier measurements.
         bvec2d_array = bvec.reshape(self.npsf, self.nrows, self.ncols)
-        conv_images = np.fft.ifft2(bvec2d_array)
-        conv_images = conv_images*self.psf_collection*self.nrows*self.ncols
-        imagesvec = np.sum(conv_images,axis=0).reshape(-1, 1)
+        conv_images = fft2(bvec2d_array)
+        conv_images = conv_images*self.psf_collection.conjugate()
+        conv_images = ifft2(conv_images)
+        imagesvec = np.sum(conv_images, axis=0).reshape(-1, 1)
+        # fig, (ax1, ax2) = plt.subplots(1, 2)
+        # ax1.imshow(np.abs(conv_images[0,:,:]))
+        # ax2.imshow(np.abs(bvec2d_array[0,:,:]))
+        # plt.show()
         return imagesvec
 
+class FPMOperator(object):
+    """ Linear operator creator from problem data.
+
+        Create a measurement operator that maps a vector of pixels into Fourier
+        measurements using a collection of PSF's.
+    """
+    def __init__(self, psf_collection, m, n):
+        npsf, nrows, ncols = psf_collection.shape
+        self.psf_collection = psf_collection
+        self.npsf = npsf
+        self.nrows = nrows
+        self.ncols = ncols
+        self.m = m
+        self.n = n
+        self.ratio = n//m
+
+    def mv(self, xvec):
+        """The fourier mask matrix operator.
+
+        It aplies an FT and then rescales the result.
+
+        As the reconstruction method stores iterates as vectors, this
+        function needs to accept a vector as input.
+        """
+        xvec2d = xvec.reshape(self.nrows, self.ncols)
+        xvec2d_fft = fft2(xvec2d)
+        bvec2d = ifft2(self.psf_collection*xvec2d_fft)
+        bvec_rescaled = bvec2d[:,0::self.ratio,0::self.ratio]
+        # bvec_array = bvec_rescaled.reshape(self.npsf*self.m*self.m, 1)
+        bvec_array = bvec_rescaled.ravel()
+        return bvec_array
+
+    def rmv(self, bvec):
+        # The adjoint/transpose of the measurement operator
+        # The reconstruction method stores measurements as vectors, so we need
+        # to accept a vector input, and convert it back into a 3D array of
+        # Fourier measurements.
+        padded_bvec = np.zeros((self.npsf,self.n,self.n), dtype=complex)
+        padded_bvec[:,::self.ratio,::self.ratio] = bvec.reshape(self.npsf, self.m, self.m)
+        bvec2d_array = padded_bvec.reshape(self.npsf, self.n, self.n)
+        conv_images = fft2(bvec2d_array)
+        conv_images = conv_images*self.psf_collection.conjugate()
+        conv_images = ifft2(conv_images)
+        imagesvec = np.sum(conv_images, axis=0).reshape(-1, 1)
+        return imagesvec

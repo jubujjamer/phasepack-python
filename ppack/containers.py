@@ -19,10 +19,13 @@ University of Buenos Aires, 2018.
 __version__ = "1.0.0"
 __author__ = 'Juan M. Bujjamer'
 
+import logging
+
 import numpy as np
 from scipy.sparse.linalg import LinearOperator, eigs, lsqr
 from numpy.random import multivariate_normal as mvnrnd
 import matplotlib.pylab as plt
+
 
 class Options(object):
     """ A Class to manage options  for the reconstruction algorithms.
@@ -151,7 +154,10 @@ class Options(object):
                 setattr(self, key, val)
 
         for key, val in spec_defaults[self.algorithm.lower()].items():
-            setattr(self, key, val)
+            if key in kwargs.keys():
+                setattr(self, key, kwargs[key])
+            else:
+                setattr(self, key, val)
 
 class ResultsContainer(object):
     """
